@@ -16,6 +16,9 @@ local scare = require(script.Parent.Scare)
 local remotes = ReplicatedStorage.Remotes
 local state = ReplicatedStorage.GameState
 
+local ARRIVAL_FREEZE = 2 -- секунд заморозки после переноса, пока грузится пол
+local FALL_LIMIT = -20 -- ниже этой высоты игрок считается провалившимся
+
 local GameLoop = {}
 
 local function notifyAll(text, kind)
@@ -157,6 +160,24 @@ local function setupForest(forest, round)
 	end)
 end
 
+-- Переносит персонажа и ненадолго замораживает его, чтобы он не провалился,
+-- если пол на новом месте у игрока ещё не загрузился.
+local function moveCharacter(player, position)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+	pcall(player.RequestStreamAroundAsync, player, position)
+	root.Anchored = true
+	character:PivotTo(CFrame.new(position))
+	task.delay(ARRIVAL_FREEZE, function()
+		if root.Parent then
+			root.Anchored = false
+		end
+	end)
+end
+
 local function teleportIntoMaze(layout)
 	local participants = 0
 	for _, player in Players:GetPlayers() do
@@ -164,9 +185,7 @@ local function teleportIntoMaze(layout)
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		if humanoid and humanoid.Health > 0 then
 			participants += 1
-			local position = layout:startPosition(participants)
-			pcall(player.RequestStreamAroundAsync, player, position)
-			character:PivotTo(CFrame.new(position))
+			moveCharacter(player, layout:startPosition(participants))
 			player:SetAttribute("Zone", "Maze")
 			player:SetAttribute("InRound", true)
 		end
@@ -174,13 +193,34 @@ local function teleportIntoMaze(layout)
 	return participants
 end
 
-local function playRound()
+-- Страховка: провалившегося сквозь пол игрока возвращаем на старт его локации.
+local function rescueFallen(layout)
+	for _, player in survivors() do
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if root and root.Position.Y < FALL_LIMIT then
+			local position = if player:GetAttribute("Zone") == "Forest"
+				then layout.forestEntry + Vector3.new(6, 3, 0)
+				else layout:startPosition(math.random(1, 9))
+			moveCharacter(player, position)
+		end
+	end
+end
+
+-- Карта строится заранее, пока игроки ждут в лобби: у всех клиентов
+-- есть время её загрузить до переноса в подвал.
+local function prepareRound()
 	local rng = Random.new()
 	local layout = MapBuilder.buildMaze(rng)
 	local forest = ForestBuilder.build(rng, layout.forestEntry)
-	local round = { escaped = 0, shadow = nil }
+	local round = { layout = layout, forest = forest, escaped = 0, shadow = nil }
 	setupKeys(layout)
 	setupForest(forest, round)
+	return round
+end
+
+local function playRound(round)
+	local layout, forest = round.layout, round.forest
 
 	-- Выход из подвала в лес.
 	local exitConnection = layout.exitZone.Touched:Connect(function(hit)
@@ -205,6 +245,13 @@ local function playRound()
 		shadow = Shadow.new(forest)
 		shadow:start()
 		round.shadow = shadow
+
+		task.spawn(function()
+			while layout.folder.Parent do
+				rescueFallen(layout)
+				task.wait(0.2)
+			end
+		end)
 
 		for timeLeft = Config.RoundTime, 0, -1 do
 			setPhase("Playing", timeLeft)
@@ -276,11 +323,12 @@ function GameLoop.start()
 				setPhase("Waiting", 0)
 				task.wait(1)
 			end
+			local round = prepareRound()
 			for timeLeft = Config.IntermissionTime, 1, -1 do
 				setPhase("Intermission", timeLeft)
 				task.wait(1)
 			end
-			playRound()
+			playRound(round)
 		end
 	end)
 end
