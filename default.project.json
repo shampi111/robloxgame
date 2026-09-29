@@ -1,0 +1,58 @@
+{
+  "name": "horror",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/shared"
+      },
+      "Remotes": {
+        "$className": "Folder",
+        "Notify": {
+          "$className": "RemoteEvent"
+        },
+        "Jumpscare": {
+          "$className": "RemoteEvent"
+        }
+      },
+      "GameState": {
+        "$className": "Configuration"
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/server"
+      }
+    },
+    "StarterPlayer": {
+      "$properties": {
+        "CameraMode": "LockFirstPerson",
+        "CharacterWalkSpeed": 12
+      },
+      "StarterPlayerScripts": {
+        "Client": {
+          "$path": "src/client"
+        }
+      }
+    },
+    "Players": {
+      "$properties": {
+        "RespawnTime": 4
+      }
+    },
+    "Lighting": {
+      "$properties": {
+        "Ambient": [0.04, 0.035, 0.035],
+        "OutdoorAmbient": [0, 0, 0],
+        "Brightness": 0,
+        "ClockTime": 0,
+        "FogColor": [0, 0, 0],
+        "FogStart": 0,
+        "FogEnd": 80,
+        "GlobalShadows": true,
+        "EnvironmentDiffuseScale": 0,
+        "EnvironmentSpecularScale": 0
+      }
+    }
+  }
+}

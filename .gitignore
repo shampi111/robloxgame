@@ -1,0 +1,11 @@
+# Собранные места и модели
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+*.lock
+
+# Файлы, которые генерируют инструменты
+sourcemap.json
+roblox.yml
+roblox.toml

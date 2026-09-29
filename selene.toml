@@ -1,0 +1,3 @@
+std = "roblox"
+# tests/ — скрипты для Lune, а не для Roblox
+exclude = ["tests/*"]
