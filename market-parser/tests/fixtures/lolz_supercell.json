@@ -1,0 +1,51 @@
+{
+  "items": [
+    {
+      "item_id": 900001,
+      "item_state": "active",
+      "category_id": 15,
+      "published_date": 1760360000,
+      "title": "Brawl Stars 40к кубков, 80 бравлеров",
+      "description": "Полный доступ, родная почта",
+      "descriptionPlain": "Полный доступ, родная почта",
+      "price": 2500,
+      "rub_price": 2500,
+      "price_currency": "rub",
+      "item_origin": "personal",
+      "itemOriginPhrase": "Личный",
+      "supercell_brawler_count": 80,
+      "supercell_legendary_brawler_count": 6,
+      "supercell_laser_level": 210,
+      "supercell_laser_trophies": 40123,
+      "supercell_laser_highest_trophies": 41000,
+      "supercell_scroll_level": null,
+      "supercell_scroll_trophies": null,
+      "supercell_king_level": null,
+      "seller": {"user_id": 1, "username": "lolzseller", "sold_items_count": 154}
+    },
+    {
+      "item_id": 900002,
+      "item_state": "active",
+      "category_id": 15,
+      "published_date": 1760359000,
+      "title": "BS + CR аккаунт",
+      "description": "",
+      "price": 999,
+      "price_currency": "rub",
+      "item_origin": "resale",
+      "supercell_brawler_count": 40,
+      "supercell_laser_level": 90,
+      "supercell_laser_trophies": 15000,
+      "supercell_scroll_trophies": 7500,
+      "supercell_king_level": 14,
+      "supercell_scroll_level": 14,
+      "supercell_scroll_evolved_count": 3,
+      "seller": {"user_id": 2, "username": "another", "sold_items_count": 3}
+    }
+  ],
+  "totalItems": 2,
+  "hasNextPage": false,
+  "perPage": 40,
+  "page": 1,
+  "system_info": {"rate_limit": {"limit": 120, "remaining": 119, "reset": 60}, "visitor_id": 1, "time": 1760360001, "log_id": 1}
+}

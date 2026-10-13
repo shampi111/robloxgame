@@ -1,0 +1,85 @@
+# Скопируйте этот файл в config.yaml и заполните.
+# Строки, начинающиеся с #, — комментарии, бот их не читает.
+
+telegram:
+  # Токен бота от @BotFather (вида 123456789:AAE...)
+  bot_token: "ВАШ_ТОКЕН_БОТА"
+  # Куда слать уведомления. Свой chat id можно узнать у @userinfobot.
+  # Только из этих чатов бот принимает команды (/interval, /pause и т.д.).
+  chat_ids: [123456789]
+  # Управление ботом командами из Telegram
+  commands: true
+  # proxy: "socks5://user:pass@host:port"   # если Telegram заблокирован у провайдера
+
+monitor:
+  # Как часто проверять сайты, в минутах (от 1 до 1440).
+  # Можно менять прямо из Telegram командой /interval 10 — без перезапуска.
+  interval_minutes: 5
+  # При самом первом запуске бот только запоминает объявления, которые уже висят на сайте,
+  # и присылает уведомления лишь о новых. true — прислать и все текущие подходящие.
+  notify_on_first_run: false
+  # Прислать повторное уведомление, если продавец снизил цену (или объявление подешевело и стало подходить).
+  notify_price_drop: true
+  # Не больше стольких уведомлений за одну проверку (защита от спама при слишком широких условиях).
+  max_notifications_per_cycle: 25
+  # Файл, где бот помнит уже просмотренные объявления.
+  state_file: state.json
+  # proxy: "http://user:pass@host:port"     # прокси для запросов к FunPay и LolzMarket
+
+funpay:
+  enabled: true
+  # Раздел «Аккаунты» каждой игры: число из ссылки https://funpay.com/lots/<число>/ (можно вставить ссылку целиком).
+  # auto — бот сам найдёт раздел «Аккаунты» на главной странице FunPay (если вдруг id поменяется).
+  categories:
+    brawl_stars: 436      # https://funpay.com/lots/436/
+    clash_royale: 149     # https://funpay.com/lots/149/
+  # Пауза между запросами к FunPay, секунды. Не ставьте меньше 3–5: можно получить бан по IP.
+  request_delay_seconds: 5
+
+lolz:
+  enabled: true
+  # Токен API LolzMarket с правом market: https://lolz.live/account/api
+  # (для доступа к Market API нужно 200 симпатий на форуме или платная подписка).
+  token: "ВАШ_ТОКЕН_LOLZ"
+  base_url: https://api.lzt.market        # запасной адрес: https://prod-api.lzt.market
+  item_url: "https://lzt.market/{id}/"     # как строить ссылку на объявление
+  # Пауза между запросами к API, секунды (лимит поиска — от 20 до 120 запросов в минуту).
+  request_delay_seconds: 3.5
+  # Сколько страниц новых объявлений смотреть на каждое правило (на странице около 40 штук).
+  pages: 1
+
+# Условия. Объявление присылается, если подходит хотя бы под одно правило.
+# Все поля, кроме name и game, необязательные — не нужное условие просто удалите.
+rules:
+  - name: "BS дешёвый с кубками"
+    game: brawl_stars             # brawl_stars или clash_royale
+    sites: [funpay, lolz]         # где искать
+    price_max: 1500               # цена в рублях, включительно
+    # price_min: 100
+    trophies_min: 30000           # кубков не меньше
+    # trophies_max: 60000
+    brawlers_min: 60              # бравлеров не меньше (только Brawl Stars)
+    # level_min: 150              # уровень аккаунта не меньше
+    # Слова ищутся в названии и описании (регистр не важен):
+    # include_all: ["почта"]      # должны быть ВСЕ эти слова
+    # include_any: ["полный доступ", "родная почта"]   # хотя бы ОДНО из этих слов
+    exclude: ["аренда", "rent"]   # НИ ОДНОГО из этих слов
+    # На FunPay кубки/бравлеры берутся из текста объявления («35к кубков»). Если продавец их не указал:
+    # false — пропустить такое объявление, true — всё равно прислать.
+    allow_unknown: false
+    # Только для FunPay: требования к продавцу
+    # online_only: true           # продавец сейчас онлайн
+    min_reviews: 5                # отзывов не меньше
+    # min_rating: 4.5             # рейтинг не ниже (1–5)
+    # Только для LolzMarket: любые параметры поиска API как есть (см. README)
+    # lolz_params:
+    #   origin: [personal, resale]
+    #   legendary_brawlers_min: 5
+
+  - name: "CR прокачанный"
+    game: clash_royale
+    sites: [funpay, lolz]
+    price_max: 3000
+    trophies_min: 7000
+    level_min: 14                 # уровень короля
+    exclude: ["аренда"]

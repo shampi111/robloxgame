@@ -1,0 +1,9 @@
+config.yaml
+state.json
+state.json.broken
+.state-*.json
+*.log
+*.log.*
+__pycache__/
+.venv/
+venv/
