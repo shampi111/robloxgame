@@ -162,6 +162,11 @@ def _attrs(a: Tag) -> dict[str, tuple[str, str]]:
     return result
 
 
+def _base_key(name: str) -> str:
+    """Имя параметра без хвостов полей диапазона: f-1001-min → f-1001."""
+    return re.sub(r"(\[\]|[-_](?:min|max|from|to))$", "", name)
+
+
 class PageMeta:
     """Названия параметров страницы: имя атрибута (без «data-») → подпись, и варианты выпадающих списков."""
 
@@ -175,7 +180,7 @@ class PageMeta:
                     if cls.startswith("tc-") and _text(div):
                         self.labels.setdefault(cls[3:], _text(div))
         for el in soup.select(".showcase-filters [name]"):
-            key = re.sub(r"(\[\]|[-_](?:min|max|from|to))$", "", str(el["name"]))
+            key = _base_key(str(el["name"]))
             label = self._label_for(soup, el)
             if label:
                 self.labels.setdefault(key, label)
@@ -191,15 +196,19 @@ class PageMeta:
             label = soup.select_one(f'label[for="{el["id"]}"]')
             if label is not None and _text(label):
                 return _text(label)
+        base = _base_key(str(el["name"]))
         parent = el.parent
         while parent is not None and parent.name not in ("form", "body", "html", "[document]"):
             if "showcase-filters" in (parent.get("class") or []):
                 break
-            label = parent.find("label")
-            if label is not None and _text(label):
-                return _text(label)
-            if parent.find_all(attrs={"name": True}) != [el]:
-                break  # обёртка уже содержит другие поля — её подпись не про это поле
+            for label in parent.find_all("label"):
+                # Подпись относится к полю, только если первое поле после неё (или внутри неё) — это само поле
+                # (или его пара «от/до»).
+                nxt = label.find_next(attrs={"name": True})
+                if _text(label) and nxt is not None and _base_key(str(nxt["name"])) == base:
+                    return _text(label)
+            if any(_base_key(str(o["name"])) != base for o in parent.find_all(attrs={"name": True})):
+                break  # обёртка уже содержит другие поля — её подписи не про это поле
             parent = parent.parent
         for attr in ("placeholder", "aria-label", "title", "data-title"):
             value = str(el.get(attr) or "").strip()

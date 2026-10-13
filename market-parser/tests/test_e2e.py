@@ -206,3 +206,35 @@ def test_telegram_long_message_and_permanent_errors():
     assert failed == set()  # заблокированный чат — постоянная ошибка, повторять не нужно
     first = calls[0]
     assert len(first["text"]) <= 4096 and "parse_mode" not in first and "<b>" not in first["text"]
+
+
+@respx.mock
+def test_lolz_switches_back_to_main_address(tmp_path, monkeypatch):
+    import parser_bot.http as http_mod
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(http_mod.asyncio, "sleep", no_sleep)
+    cfg = _lolz_only_config(tmp_path)
+    data = json.loads((FIXTURES / "lolz_supercell.json").read_text(encoding="utf-8"))
+    main = respx.get("https://api.lzt.market/supercell").mock(
+        side_effect=[httpx.ConnectError("down")] * 4 + [httpx.Response(200, json=data)] * 5)
+    backup = respx.get("https://prod-api.lzt.market/supercell").mock(
+        side_effect=[httpx.Response(200, json=data)] + [httpx.ConnectError("down")] * 20)
+    respx.post("https://api.telegram.org/bot123:abc/sendMessage").mock(
+        return_value=httpx.Response(200, json={"ok": True, "result": {}}))
+
+    async def scenario():
+        tg = Telegram(cfg.telegram.bot_token, cfg.telegram.chat_ids)
+        m = Monitor(cfg, tg)
+        try:
+            await m.run_cycle()  # основной лежит — переключились на запасной
+            await m.run_cycle()  # запасной лёг — вернулись на основной
+            return m.status_text()
+        finally:
+            await m.close()
+            await tg.close()
+
+    status = asyncio.run(scenario())
+    assert "✅ Lolz" in status and main.call_count >= 5 and backup.call_count >= 2

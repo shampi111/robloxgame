@@ -439,3 +439,58 @@ def test_sleep_wakes_on_check(tmp_path):
         assert await asyncio.wait_for(sleeper, timeout=1) is True
 
     run(scenario())
+
+
+def test_upgrade_from_first_version_state(tmp_path):
+    rules = [BS]
+    (tmp_path / "state.json").write_text(json.dumps({
+        "seen": {
+            "funpay:brawl_stars:1": {"first_seen": 1, "last_seen": 9e9, "price": 500, "notified_price": 500,
+                                     "pending": True},
+        },
+        "initialized": ["funpay:brawl_stars"],
+        "settings": {"interval_minutes": 10},
+    }), encoding="utf-8")
+    m, tg = make(tmp_path, rules, interval_minutes=5)
+    assert m.interval_minutes == 10  # /interval из первой версии не потерялся
+    m.funpay.data["brawl_stars"] = [fp("1", 500), fp("2", 400)]
+    # Старый pending: true не роняет бота и досылается; источник уже был «запомнен» — новое тоже приходит.
+    assert run(m.run_cycle()) == 2
+
+
+def test_pending_survives_temporary_mismatch(tmp_path):
+    rule = Rule(name="bs", game="brawl_stars", sites=["funpay"], online_only=True)
+    m, tg = make(tmp_path, [rule])
+    m.funpay.data["brawl_stars"] = []
+    run(m.run_cycle())
+    m.funpay.data["brawl_stars"] = [fp("1", 500)]
+    tg.down = {"1"}
+    run(m.run_cycle())  # Telegram недоступен — уведомление отложено
+    offline = fp("1", 500)
+    offline.seller_online = False
+    tg.down = set()
+    m.funpay.data["brawl_stars"] = [offline]
+    run(m.run_cycle())  # продавец вышел из сети — пока не подходит
+    m.funpay.data["brawl_stars"] = [fp("1", 500)]
+    run(m.run_cycle())
+    assert sum("id=1" in t for t in tg.texts()) == 1  # но уведомление всё равно дошло
+
+
+def test_no_summary_when_total_is_under_limit(tmp_path):
+    rules = [Rule(name="f", game="brawl_stars", sites=["funpay"]), Rule(name="l", game="brawl_stars", sites=["lolz"])]
+    m, tg = make(tmp_path, rules, notify_on_first_run=True, max_notifications_per_cycle=25)
+    m.funpay.data["brawl_stars"] = [fp(str(i), 100) for i in range(18)]
+    m.lolz.data = {"l": [lz(str(i), 100) for i in range(2)]}
+    assert run(m.run_cycle()) == 20
+    assert not any("Ещё подходящих" in t for t in tg.texts())
+
+
+def test_health_warning_retried_if_not_delivered(tmp_path):
+    m, tg = make(tmp_path, [BS])
+    m.funpay.error = "HTTP 403"
+    tg.down = {"1"}
+    for _ in range(3):
+        run(m.run_cycle())
+    tg.down = set()
+    run(m.run_cycle())
+    assert any("не отвечает" in t for t in tg.texts())

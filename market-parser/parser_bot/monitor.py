@@ -63,6 +63,9 @@ class Monitor:
         # --interval действует только на этот запуск и не сохраняется.
         self.cli_interval = interval_override
         settings = self.state.settings
+        self.state.adopt_legacy_sources(config.rules_hash())
+        if "interval_minutes" in settings and "interval_config_base" not in settings:
+            settings["interval_config_base"] = config.monitor.interval_minutes  # сохранено первой версией бота
         if "interval_minutes" in settings and settings.get("interval_config_base") != config.monitor.interval_minutes:
             # После /interval пользователь поменял interval_minutes в config.yaml — значит, теперь главнее конфиг.
             settings.pop("interval_minutes", None)
@@ -175,12 +178,18 @@ class Monitor:
             # достаётся следующему.
             share = -(-self._quota // max(1, len(jobs)))
             labels: set[str] = set()
+            deferred: list[Alert] = []
             sent = 0
             for done, job in enumerate(asyncio.as_completed(jobs), start=1):
                 results = await job
                 labels.update(r.label for r in results)
                 await self._report_health(results)
-                sent += await self._process(results, self._quota if done == len(jobs) else min(share, self._quota))
+                last = done == len(jobs)
+                sent += await self._process(results, self._quota if last else min(share, self._quota),
+                                            None if last else deferred)
+            if deferred:
+                # Что не поместилось в долю первого сайта — отдельными сообщениями, если лимит остался, иначе списком.
+                sent += await self._deliver(deferred, self._quota)
             self._forget_health(labels)
             self.state.forget_old()
             self.state.save()
@@ -199,7 +208,7 @@ class Monitor:
             before = dict(before, price=None)
 
         pending = before.get("pending") if before else None
-        if pending:
+        if isinstance(pending, dict) and pending:
             # В прошлый раз уведомление дошло не во все чаты — досылаем туда, куда не дошло.
             return Alert(listing, matched, pending.get("kind", "new"), pending.get("old_price"), pending.get("chats"))
 
@@ -220,7 +229,7 @@ class Monitor:
             return Alert(listing, matched, "price_drop", notified)
         return None
 
-    async def _process(self, results: list[FetchResult], quota: int | None = None) -> int:
+    async def _process(self, results: list[FetchResult], quota: int | None = None, defer: list | None = None) -> int:
         # Одно и то же объявление может прийти из нескольких запросов (разные правила Lolz).
         merged: dict[str, Listing] = {}
         origins: dict[str, set[str]] = {}
@@ -248,8 +257,7 @@ class Monitor:
                 if matches(r, listing) and (listing.site != "lolz" or r.name in origins.get(key, ()))
             ]
             if not matched:
-                if before and before.get("pending"):
-                    self.state.clear_pending(key)
+                # Недоставленное уведомление (pending) не сбрасываем: дошлём, когда объявление снова подойдёт.
                 continue
             first_run = all(not self.state.source_initialized(s) for s in sources[key])
             alert = self._decide(listing, matched, before, first_run)
@@ -261,15 +269,16 @@ class Monitor:
                 self.state.mark_source_ok(res.source_key)
 
         if foreign_currency and "funpay" not in self._currency_warned:
-            self._currency_warned.add("funpay")
-            await self.tg.send(
+            failed = await self.tg.send(
                 f"⚠️ FunPay показывает цены в {esc(', '.join(sorted(foreign_currency)))}, а не в рублях. "
                 f"Условия price_min/price_max для FunPay сейчас не срабатывают. Обычно так бывает, "
                 f"если бот запущен с зарубежного IP. См. README, раздел «Если что-то не работает»."
             )
-        return await self._deliver(alerts, self._quota if quota is None else quota)
+            if len(failed) < len(self.tg.chat_ids):
+                self._currency_warned.add("funpay")
+        return await self._deliver(alerts, self._quota if quota is None else quota, defer)
 
-    async def _deliver(self, alerts: list[Alert], quota: int) -> int:
+    async def _deliver(self, alerts: list[Alert], quota: int, defer: list | None = None) -> int:
         alerts = _interleave_sites(alerts)
         limit = self.config.monitor.max_notifications_per_cycle
         quota = max(0, quota)
@@ -299,13 +308,26 @@ class Monitor:
         self._quota -= min(quota, len(alerts))
 
         overflow = alerts[quota:]
+        if defer is not None:
+            defer.extend(overflow)  # решим после того, как ответят остальные сайты
+            return sent
         if overflow and not self._telegram_down:
-            for chunk_text, chunk in format_overflow([(a.listing, a.old_price) for a in overflow], limit):
-                failed = await self.tg.send(chunk_text)
-                if len(failed) < len(self.tg.chat_ids):
-                    for listing, _old in chunk:
-                        self.state.mark_notified(listing.key, listing.price)
-                # Не дошло никуда — эти объявления придут в следующий раз как «теперь подходит».
+            # Сводку шлём отдельно для каждой группы получателей (досылка в один чат не должна уйти всем).
+            groups: dict[tuple[str, ...] | None, list[Alert]] = {}
+            for a in overflow:
+                groups.setdefault(None if a.chats is None else tuple(a.chats), []).append(a)
+            for chats, group in groups.items():
+                targets = self.tg.chat_ids if chats is None else list(chats)
+                by_key = {a.listing.key: a for a in group}
+                for chunk_text, chunk in format_overflow([(a.listing, a.old_price) for a in group], limit):
+                    failed = await self.tg.send(chunk_text, chats=None if chats is None else list(chats))
+                    if len(failed) < len(targets):
+                        for listing, _old in chunk:
+                            a = by_key[listing.key]
+                            self.state.mark_notified(listing.key, listing.price)
+                            if failed:
+                                self.state.set_pending(listing.key, sorted(failed), a.kind, a.old_price)
+                    # Не дошло никуда — эти объявления придут в следующий раз.
             self.state.save()
         return sent
 
@@ -317,11 +339,12 @@ class Monitor:
                 h["last_error"] = res.error
                 log.warning("%s: %s", res.label, res.error)
                 if h["failures"] >= ALERT_AFTER_FAILURES and not h.get("alerted"):
-                    h["alerted"] = True
-                    await self.tg.send(
+                    failed = await self.tg.send(
                         f"⚠️ <b>{esc(res.label)}</b> не отвечает уже {h['failures']} проверки подряд.\n"
                         f"<code>{esc(res.error[:500])}</code>"
                     )
+                    # Не дошло (Telegram тоже недоступен) — попробуем предупредить в следующий раз.
+                    h["alerted"] = len(failed) < len(self.tg.chat_ids)
             else:
                 if h.get("alerted"):
                     await self.tg.send(f"✅ <b>{esc(res.label)}</b> снова работает.")

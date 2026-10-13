@@ -118,3 +118,26 @@ rules: [{name: a, game: brawl_stars, sites: [funpay]}]
 """
     with pytest.raises(ConfigError, match="chat id"):
         load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("https://funpay.com/lots/436/?utm_source=tg&utm_id=77", 436), ("https://funpay.com/lots/436/#top", 436), (436, 436)],
+)
+def test_category_links(tmp_path, value, expected):
+    text = f"""
+telegram: {{bot_token: "1:x", chat_ids: [1]}}
+funpay: {{categories: {{brawl_stars: "{value}"}}}}
+rules: [{{name: a, game: brawl_stars, sites: [funpay]}}]
+"""
+    assert load_config(write(tmp_path, text)).funpay.categories["brawl_stars"] == expected
+
+
+def test_offer_link_is_not_a_category(tmp_path):
+    text = """
+telegram: {bot_token: "1:x", chat_ids: [1]}
+funpay: {categories: {brawl_stars: "https://funpay.com/lots/offer?id=41234567"}}
+rules: [{name: a, game: brawl_stars, sites: [funpay]}]
+"""
+    with pytest.raises(ConfigError, match="номер раздела"):
+        load_config(write(tmp_path, text))

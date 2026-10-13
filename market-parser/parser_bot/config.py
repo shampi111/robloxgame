@@ -261,9 +261,12 @@ def load_config(path: str | Path) -> Config:
         if str(value).strip().lower() == "auto":
             categories[str(game)] = "auto"
             continue
-        m = re.search(r"(\d+)/?$", str(value).strip())
-        if not m:
-            raise ConfigError(f"funpay.categories.{game}: укажите число (id из ссылки funpay.com/lots/<id>/) или auto")
+        text = str(value).strip()
+        m = re.search(r"/lots/(\d+)(?=[/?#]|$)", text) or re.fullmatch(r"(\d+)", text)
+        if not m or isinstance(value, (bool, float)) or int(m.group(1)) <= 0:
+            raise ConfigError(
+                f"funpay.categories.{game}: укажите номер раздела (число из ссылки funpay.com/lots/<число>/) или auto"
+            )
         categories[str(game)] = int(m.group(1))
     funpay.categories = categories
 

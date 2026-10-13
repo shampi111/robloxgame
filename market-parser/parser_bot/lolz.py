@@ -245,12 +245,12 @@ class LolzSource:
         try:
             return await self.http.get(f"{self.base_url}{path}", params=params)
         except FetchError as e:
-            fallback = self.config.fallback_base_url
-            if not e.unreachable or not fallback or fallback == self.base_url:
+            other = next((u for u in (self.config.base_url, self.config.fallback_base_url) if u and u != self.base_url), None)
+            if not e.unreachable or other is None:
                 raise
-            log.warning("LolzMarket: %s не отвечает, пробую запасной адрес %s", self.base_url, fallback)
-            r = await self.http.get(f"{fallback}{path}", params=params)
-            self.base_url = fallback  # запасной работает — пользуемся им до перезапуска
+            log.warning("LolzMarket: %s не отвечает, пробую другой адрес %s", self.base_url, other)
+            r = await self.http.get(f"{other}{path}", params=params)
+            self.base_url = other  # этот адрес работает — пользуемся им, пока он не откажет
             return r
 
     async def fetch(self, rule: Rule) -> list[Listing]:

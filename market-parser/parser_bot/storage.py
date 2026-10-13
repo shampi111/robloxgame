@@ -31,6 +31,7 @@ class State:
         self.seen: dict[str, dict[str, Any]] = {}
         # ключ источника → время последнего удачного ответа
         self.sources: dict[str, float] = {}
+        self.legacy_sources: list[str] = []
         # название источника → {failures, alerted, last_error}
         self.health: dict[str, dict[str, Any]] = {}
         # Настройки, изменённые командами бота (например, interval_minutes).
@@ -55,10 +56,15 @@ class State:
                 pass
             return
         self.seen = data.get("seen") or {}
+        for entry in self.seen.values():
+            pending = entry.get("pending")
+            if pending and not isinstance(pending, dict):
+                # Первая версия бота хранила просто pending: true — дошлём во все чаты.
+                entry["pending"] = {"chats": None, "kind": "new", "old_price": None}
         self.sources = data.get("sources") or {}
-        # Файл от первой версии бота: список источников без времени.
-        for key in data.get("initialized") or []:
-            self.sources.setdefault(key, time.time())
+        # Первая версия бота хранила список источников без времени и без отпечатка условий —
+        # Monitor допишет к ним текущий отпечаток (см. adopt_legacy_sources).
+        self.legacy_sources: list[str] = list(data.get("initialized") or [])
         self.health = data.get("health") or {}
         self.settings = data.get("settings") or {}
 
@@ -92,6 +98,11 @@ class State:
     def source_initialized(self, key: str) -> bool:
         last_ok = self.sources.get(key)
         return last_ok is not None and last_ok >= time.time() - FORGET_AFTER_SECONDS
+
+    def adopt_legacy_sources(self, suffix: str) -> None:
+        for key in self.legacy_sources:
+            self.sources.setdefault(f"{key}:{suffix}", time.time())
+        self.legacy_sources = []
 
     def mark_source_ok(self, key: str) -> None:
         self.sources[key] = time.time()
@@ -130,7 +141,3 @@ class State:
         if entry is not None:
             entry["pending"] = {"chats": sorted(chats), "kind": kind, "old_price": old_price}
 
-    def clear_pending(self, key: str) -> None:
-        entry = self.seen.get(key)
-        if entry is not None:
-            entry.pop("pending", None)
