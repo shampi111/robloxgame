@@ -12,21 +12,54 @@ from parser_bot.textparse import extract_all, extract_number
 
 # --- текст ---
 
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("35к кубков, 70 бравлеров, 150 лвл", {"trophies": 35000, "brawlers": 70, "level": 150}),
-        ("Кубков: 35 000 | Бойцов 80", {"trophies": 35000, "brawlers": 80, "level": None}),
-        ("🏆 42k, lvl 14", {"trophies": 42000, "brawlers": None, "level": 14}),
-        ("Продам акк 35,5к🏆 полный доступ", {"trophies": 35500, "brawlers": None, "level": None}),
-        ("Уровень короля 15, 9000 кубков", {"trophies": 9000, "brawlers": None, "level": 15}),
-        ("Аккаунт 2019 года, 60к кубков", {"trophies": 60000, "brawlers": None, "level": None}),
-        ("Мега аккаунт 3 легендарки", {"trophies": None, "brawlers": None, "level": None}),
-        ("10.000 cups", {"trophies": 10000, "brawlers": None, "level": None}),
-    ],
-)
-def test_extract(text, expected):
-    assert extract_all(text) == expected
+BS_CASES = [
+    ("35к кубков, 70 бравлеров, 150 лвл", (35000, 70, 150)),
+    ("35к кубков 70 бравлеров 150 лвл", (35000, 70, 150)),
+    ("Кубки 25000 Бравлеры 60", (25000, 60, None)),
+    ("Кубков: 35 000 | Бойцов 80", (35000, 80, None)),
+    ("🏆 42k, lvl 14", (42000, None, 14)),
+    ("Продам акк 35,5к🏆 полный доступ", (35500, None, None)),
+    ("Аккаунт 2019 года, 60к кубков", (60000, None, None)),
+    ("Мега аккаунт 3 легендарки", (None, None, None)),
+    ("10.000 cups", (10000, None, None)),
+    # число от соседнего параметра не должно «перетекать»
+    ("Бравлеров: 70, Кубков: 35000", (35000, 70, None)),
+    ("Легендарки: 5 | Кубки: 25000", (25000, None, None)),
+    ("Уровень: 200, бравлеров: 70, кубков: 35к", (35000, 70, 200)),
+    ("Цена 1500₽ 35к кубков", (35000, None, None)),
+    ("191K Trophies 161 Primes", (191000, None, None)),
+    # «тыс», диапазоны, слова между ключом и числом
+    ("Кубков 35 тыс", (35000, None, None)),
+    ("35 тыс. кубков", (35000, None, None)),
+    ("80/82 бравлеров", (None, 80, None)),
+    ("30-35к кубков", (30000, None, None)),
+    ("Кубков на аккаунте 35к", (35000, None, None)),
+    ("70 уровень бравл пасса, 30к кубков", (30000, None, None)),
+]
+
+CR_CASES = [
+    ("Уровень короля 15, 9000 кубков", (9000, 15)),
+    ("Кубков 9000, Уровень короля 11", (9000, 11)),
+    ("Уровень короля 14 Кубков 9000", (9000, 14)),
+    ("Все карты 14 уровня, король 13, 7000 кубков", (7000, 13)),
+    ("Карты 15 ур, КБ 14, 9к кубков", (9000, 14)),
+    ("Аккаунт с 10 лвл карт", (None, None)),
+    ("14 король", (None, 14)),
+    ("King Tower 15", (None, 15)),
+    ("Уровень 99", (None, None)),  # у короля не бывает 99 уровня
+]
+
+
+@pytest.mark.parametrize("text, expected", BS_CASES)
+def test_extract_brawl_stars(text, expected):
+    got = extract_all(text, "brawl_stars")
+    assert (got["trophies"], got["brawlers"], got["level"]) == expected
+
+
+@pytest.mark.parametrize("text, expected", CR_CASES)
+def test_extract_clash_royale(text, expected):
+    got = extract_all(text, "clash_royale")
+    assert (got["trophies"], got["level"]) == expected and got["brawlers"] is None
 
 
 def test_extract_ignores_implausible_values():
@@ -61,7 +94,7 @@ def test_funpay_parse_rows():
 
 def test_funpay_empty_page_is_error():
     with pytest.raises(FetchError):
-        parse_category("<html><title>Just a moment...</title><body></body></html>", "brawl_stars")
+        parse_category("<html><title>Just a moment...</title><body></body></html>", "brawl_stars", 436)
 
 
 # --- LolzMarket ---
@@ -132,9 +165,42 @@ def test_funpay_params_from_filter_labels():
     assert x.extra["Бравлеры"] == "70"
 
 
-def test_funpay_empty_category_is_not_error():
+def test_funpay_empty_or_wrong_page_is_error():
     html = '<html><body><div class="showcase" data-section="lot-436"><div class="tc-header"></div></div></body></html>'
-    assert parse_category(html, "brawl_stars") == []
+    with pytest.raises(FetchError, match="нет ни одного объявления"):
+        parse_category(html, "brawl_stars", 436)
+    other = (FIXTURES / "funpay_brawl_stars.html").read_text(encoding="utf-8").replace(
+        '<div class="tc ', '<div class="showcase" data-section="lot-999"></div><div class="tc ')
+    with pytest.raises(FetchError, match="другой"):
+        parse_category(other, "brawl_stars", 436)
+
+
+def test_funpay_label_heuristics():
+    html = FILTERED_PAGE.replace(
+        '<div class="form-group"><input type="number" name="f-1001-min" placeholder="Кубки от"></div>',
+        '<div class="form-group"><label>Кубки</label><input name="f-1001-min" placeholder="от">'
+        '<input name="f-1001-max" placeholder="до"></div>',
+    ).replace('<input type="checkbox" name="online">', '<input type="checkbox" name="online"><span>Онлайн</span>')
+    (x,) = parse_category(html, "brawl_stars")
+    assert x.trophies == 35000  # подпись «Кубки» важнее placeholder «от»
+
+
+def test_funpay_level_from_select_option():
+    html = FILTERED_PAGE.replace(
+        '<select name="f-1002"><option value="">Любая</option><option value="5">Арена 5</option></select>',
+        '<select name="f-1002"><option value="">Уровень короля</option><option value="5">14</option></select>',
+    ).replace("<label>Арена</label>", "")
+    (x,) = parse_category(html, "clash_royale")
+    assert x.level == 14
+
+
+def test_funpay_seller_flags():
+    html = (FIXTURES / "funpay_brawl_stars.html").read_text(encoding="utf-8")
+    html = html.replace('data-online="1" data-auto="1"', 'data-online="0" data-auto="0"')
+    html = html.replace("rating-stars rating-5", "rating-stars")
+    a = {x.id: x for x in parse_category(html, "brawl_stars")}["11111111"]
+    assert a.seller_online is False and "Автовыдача" not in a.extra
+    assert a.seller_rating is None  # без класса rating-N рейтинг неизвестен (не «5 звёзд»)
 
 
 def test_funpay_describe_page():
@@ -142,3 +208,29 @@ def test_funpay_describe_page():
 
     report = describe_page(FILTERED_PAGE, "brawl_stars")
     assert "строк a.tc-item: 1" in report and "кубки 35000" in report
+
+
+def test_lolz_params_normalization():
+    rule = Rule(name="r", game="brawl_stars", lolz_params={
+        "supercell_game": "clash-royale", "origin": "personal", "tel": False, "nsb": True,
+        "brawler_power": {"SHELLY": 11},
+    })
+    p = build_params(rule)
+    assert p["supercell_game[]"] == ["clash-royale"] and "supercell_game" not in p
+    assert p["origin[]"] == ["personal"]
+    assert p["tel"] == "no" and p["nsb"] == 1
+    assert p["brawler_power[SHELLY]"] == 11
+
+
+def test_lolz_odd_items_do_not_break_parsing():
+    data = {"items": [
+        {"item_id": 1, "title": "ok", "price": 100, "seller": "deleted"},
+        {"item_id": 2, "title": "usd", "price": 5, "price_currency": "usd", "rub_price": 450},
+        {"item_id": 3, "title": "usd-no-rub", "price": 5, "price_currency": "usd"},
+        "garbage",
+    ], "system_info": {"rate_limit": {"remaining": "1"}}}
+    got = {x.id: x for x in parse_response(data, "brawl_stars", "https://lzt.market/{id}/")}
+    assert set(got) == {"1", "2", "3"}
+    assert got["1"].seller is None
+    assert (got["2"].price, got["2"].currency) == (450, "RUB")
+    assert got["3"].currency == "USD"

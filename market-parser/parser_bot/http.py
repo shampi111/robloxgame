@@ -21,13 +21,22 @@ BROWSER_HEADERS = {
 
 
 class FetchError(Exception):
-    """Источник не ответил нормально. Цикл мониторинга пропускает его и пробует в следующий раз."""
+    """Источник не ответил нормально. Цикл мониторинга пропускает его и пробует в следующий раз.
+
+    unreachable=True — сайт недоступен (сеть, таймаут, ошибки сервера): имеет смысл попробовать
+    запасной адрес. Для ответов вида 4xx (неверный токен, бан, неверный параметр) — False.
+    """
+
+    def __init__(self, message: str, *, unreachable: bool = False):
+        super().__init__(message)
+        self.unreachable = unreachable
 
 
 class RateLimitedClient:
     """Обёртка над httpx.AsyncClient для одного сайта.
 
     min_delay — минимальная пауза между запросами к этому сайту (секунды).
+    auth_hint — пояснение, которое добавляется к ошибкам 401/403 (например, про токен).
     """
 
     def __init__(
@@ -40,15 +49,17 @@ class RateLimitedClient:
         proxy: str | None = None,
         timeout: float = 30.0,
         max_retries: int = 3,
+        auth_hint: str = "",
     ):
         self.name = name
         self.min_delay = min_delay
         self.max_retries = max_retries
+        self.auth_hint = auth_hint
         self._client = httpx.AsyncClient(
             headers={**BROWSER_HEADERS, **(headers or {})},
             cookies=cookies,
             proxy=proxy,
-            timeout=timeout,
+            timeout=httpx.Timeout(timeout, connect=10.0),
             follow_redirects=True,
         )
         self._lock = asyncio.Lock()
@@ -72,7 +83,7 @@ class RateLimitedClient:
                     r = await self._client.get(url, **kwargs)
                 except httpx.HTTPError as e:
                     r = None
-                    last_error = f"{type(e).__name__}: {e}"
+                    last_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
                 finally:
                     self._last = time.monotonic()
             if r is not None:
@@ -80,41 +91,55 @@ class RateLimitedClient:
                     return r
                 last_error = f"HTTP {r.status_code}"
                 if r.status_code == 429 or r.status_code >= 500:
-                    wait = _retry_after(r) or min(120, 5 * 2 ** attempt)
+                    wait = _retry_after(r) or min(60, 5 * 2 ** attempt)
                 elif r.status_code in (401, 403):
                     # 401 — неверный токен; 403 — защита от ботов / бан по IP / нет прав у токена.
-                    raise FetchError(f"{self.name}: {last_error} — {_snippet(r)}")
+                    hint = f" — {self.auth_hint}" if self.auth_hint else ""
+                    raise FetchError(f"{self.name}: {last_error}{hint} ({_snippet(r)})")
                 else:
-                    raise FetchError(f"{self.name}: {last_error} для {url}")
+                    raise FetchError(f"{self.name}: {last_error} — {_snippet(r)}")
             else:
                 wait = min(60, 3 * 2 ** attempt)
             if attempt < self.max_retries:
                 log.warning("%s: %s, повтор через %.0f с", self.name, last_error, wait)
                 await asyncio.sleep(wait)
-        raise FetchError(f"{self.name}: {last_error} (после {self.max_retries + 1} попыток)")
+        unreachable = not last_error.startswith("HTTP 429")
+        raise FetchError(f"{self.name}: {last_error} (после {self.max_retries + 1} попыток)", unreachable=unreachable)
 
 
 def _retry_after(r: httpx.Response) -> float | None:
     """Сколько ждать перед повтором: Retry-After (секунды) или X-RateLimit-Reset (unix-время, LolzMarket)."""
+    # Ждём не дольше 2 минут: дольше — пусть лучше эта проверка пропустит сайт, следующая попробует снова.
     value = r.headers.get("Retry-After")
     if value:
         try:
-            return min(600.0, max(1.0, float(value)))
+            return min(120.0, max(1.0, float(value)))
         except ValueError:
             pass
     reset = r.headers.get("X-RateLimit-Reset")
     if reset and r.status_code == 429:
         try:
-            return min(600.0, max(1.0, float(reset) - time.time() + 1))
+            return min(120.0, max(1.0, float(reset) - time.time() + 1))
         except ValueError:
             pass
     return None
 
 
 def _snippet(r: httpx.Response) -> str:
-    text = " ".join(r.text[:300].split())
-    if "cloudflare" in text.lower() or "cf-" in " ".join(r.headers.keys()).lower():
+    """Короткое объяснение ответа с ошибкой: текст ошибок API или признак защиты от ботов."""
+    try:
+        data = r.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and data.get("errors"):
+        errors = data["errors"]
+        return "; ".join(map(str, errors if isinstance(errors, list) else [errors]))[:300]
+    text = " ".join(r.text[:500].split())
+    lowered = text.lower()
+    if "cloudflare" in lowered or any(h.lower().startswith("cf-") for h in r.headers.keys()):
         return "похоже на защиту Cloudflare (проверка браузера)"
-    if "ddos-guard" in text.lower() or "ddos-guard" in r.headers.get("server", "").lower():
+    if "ddos-guard" in lowered or "ddos-guard" in r.headers.get("server", "").lower():
         return "похоже на защиту DDoS-Guard"
-    return text[:200]
+    if "qrator" in lowered or "qrator" in r.headers.get("server", "").lower():
+        return "похоже на защиту Qrator"
+    return text[:200] or "пустой ответ"

@@ -21,7 +21,7 @@ def test_example_config_loads(tmp_path):
     assert cfg.monitor.interval_minutes == 5
     assert cfg.funpay.categories == {"brawl_stars": 436, "clash_royale": 149}
     assert [r.game for r in cfg.rules] == ["brawl_stars", "clash_royale"]
-    assert cfg.rules[0].exclude == ["аренда", "rent"]
+    assert cfg.rules[0].exclude == ["аренд"]
     assert cfg.state_path == tmp_path / "state.json"
 
 
@@ -80,4 +80,41 @@ rules: [{name: a, game: brawl_stars, sites: [funpay]}]
     load_config(write(tmp_path, text))
     text = text.replace("sites: [funpay]", "sites: [lolz]")
     with pytest.raises(ConfigError, match="lolz.token"):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    "section, message",
+    [
+        ("monitor: {max_notifications_per_cycle: 0}", "max_notifications_per_cycle"),
+        ("monitor: {min_price_drop_percent: 150}", "min_price_drop_percent"),
+        ("monitor: {proxy: 'host:1080'}", "прокси"),
+        ("lolz: {token: t, pages: abc}", "lolz.pages"),
+    ],
+)
+def test_bad_settings(tmp_path, section, message):
+    text = f"""
+telegram: {{bot_token: "1:x", chat_ids: [1]}}
+{section}
+rules: [{{name: a, game: brawl_stars, sites: [funpay]}}]
+"""
+    with pytest.raises(ConfigError, match=message):
+        load_config(write(tmp_path, text))
+
+
+def test_missing_game_is_explained_in_russian(tmp_path):
+    text = """
+telegram: {bot_token: "1:x", chat_ids: [1]}
+rules: [{name: a, sites: [funpay]}]
+"""
+    with pytest.raises(ConfigError, match="не указан game"):
+        load_config(write(tmp_path, text))
+
+
+def test_bad_chat_id(tmp_path):
+    text = """
+telegram: {bot_token: "1:x", chat_ids: [мой_id]}
+rules: [{name: a, game: brawl_stars, sites: [funpay]}]
+"""
+    with pytest.raises(ConfigError, match="chat id"):
         load_config(write(tmp_path, text))

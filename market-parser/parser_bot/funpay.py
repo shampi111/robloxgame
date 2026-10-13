@@ -35,9 +35,11 @@ from .textparse import extract_all
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://funpay.com"
-CURRENCY_BY_SIGN = {"₽": "RUB", "$": "USD", "€": "EUR"}
+CURRENCY_BY_SIGN = {"₽": "RUB", "руб": "RUB", "руб.": "RUB", "р.": "RUB", "¤": "RUB", "$": "USD", "€": "EUR"}
 # Служебные data-атрибуты строки, которые не показываем как параметры аккаунта.
 SERVICE_ATTRS = {"online", "auto", "user", "offer", "href"}
+# Подсказки в полях диапазона, которые ничего не говорят о самом параметре.
+GENERIC_PLACEHOLDERS = {"от", "до", "min", "max", "from", "to", "мин", "макс", "любой", "любая", "любое", "все"}
 # По каким словам в названии параметра (или имени атрибута) понимать, что это кубки/бравлеры/уровень.
 PARAM_KEYWORDS = {
     "trophies": ("кубк", "трофе", "trophies", "trophy", "cup"),
@@ -134,9 +136,6 @@ def _seller(a: Tag) -> tuple[str | None, float | None, int | None]:
             if m:
                 rating = float(m.group(1))
                 break
-        if rating is None:
-            full = len(stars.select("i.fas"))
-            rating = float(full) if full else None
     reviews: int | None = None
     count = user.select_one(".rating-mini-count")
     if count is not None:
@@ -187,17 +186,25 @@ class PageMeta:
 
     @staticmethod
     def _label_for(soup: BeautifulSoup, el: Tag) -> str:
-        for attr in ("placeholder", "aria-label", "title", "data-title"):
-            if el.get(attr):
-                return str(el[attr]).strip()
+        # 1) <label for="id">  2) подпись в ближайшей обёртке поля  3) placeholder/title (кроме «от/до»)
         if el.get("id"):
             label = soup.select_one(f'label[for="{el["id"]}"]')
             if label is not None and _text(label):
                 return _text(label)
-        parent = el.find_parent(class_=re.compile("form-group|filter|lot-field")) or el.parent
-        label = parent.find("label") if parent is not None else None
-        if label is not None and _text(label):
-            return _text(label)
+        parent = el.parent
+        while parent is not None and parent.name not in ("form", "body", "html", "[document]"):
+            if "showcase-filters" in (parent.get("class") or []):
+                break
+            label = parent.find("label")
+            if label is not None and _text(label):
+                return _text(label)
+            if parent.find_all(attrs={"name": True}) != [el]:
+                break  # обёртка уже содержит другие поля — её подпись не про это поле
+            parent = parent.parent
+        for attr in ("placeholder", "aria-label", "title", "data-title"):
+            value = str(el.get(attr) or "").strip()
+            if value and value.lower().strip(".:") not in GENERIC_PLACEHOLDERS:
+                return value
         if el.name == "select":
             first = el.find("option")
             if first is not None and first.get("value") in (None, ""):
@@ -213,26 +220,31 @@ class PageMeta:
 
 def _numeric_from_attrs(attrs: dict[str, tuple[str, str]], meta: PageMeta, kind: str) -> int | None:
     for name, (raw, cell) in attrs.items():
-        if name in meta.options:
-            continue  # значение выпадающего списка — это id варианта, а не число
         title = f"{meta.labels.get(name, '')} {name}".lower()
         if any(k in title for k in PARAM_KEYWORDS[kind]):
-            for candidate in (cell, raw):
+            # Значение выпадающего списка — это id варианта, число берём из текста варианта или ячейки.
+            candidates = (cell, meta.options[name].get(raw, "")) if name in meta.options else (cell, raw)
+            for candidate in candidates:
                 digits = re.sub(r"[\s\u00a0]", "", candidate)
                 if digits.isdigit():
                     return int(digits)
     return None
 
 
-def parse_category(html: str, game: str) -> list[Listing]:
+def parse_category(html: str, game: str, category_id: int | None = None) -> list[Listing]:
     soup = BeautifulSoup(html, "lxml")
+    title = _text(soup.title)[:80]
+    showcase = soup.select_one("div.showcase[data-section]")
+    if category_id is not None and showcase is not None and showcase.get("data-section") != f"lot-{category_id}":
+        # FunPay перенаправил на другой раздел (раздел закрыт или id поменялся).
+        raise FetchError(
+            f"FunPay: вместо раздела lots/{category_id} открылся другой ({showcase.get('data-section')}, «{title}»)"
+        )
     rows = soup.select("a.tc-item")
     if not rows:
-        if soup.select_one("div.showcase, .tc-header") is not None:
-            return []  # страница категории настоящая, просто объявлений сейчас нет
-        # Объявлений нет и таблицы нет — пришла не та страница (защита от ботов, смена вёрстки, неверный id).
-        title = _text(soup.title)
-        raise FetchError(f"FunPay: на странице нет списка объявлений (title: «{title[:80]}»)")
+        # В разделах аккаунтов BS/CR всегда сотни объявлений, так что пустая страница — это проблема:
+        # раздел закрыт, сработала защита от ботов или поменялась вёрстка.
+        raise FetchError(f"FunPay: на странице нет ни одного объявления (title: «{title}»)")
     meta = PageMeta(soup)
     listings: list[Listing] = []
     for a in rows:
@@ -245,7 +257,7 @@ def parse_category(html: str, game: str) -> list[Listing]:
         price, currency = _price(a)
         seller, rating, reviews = _seller(a)
         attrs = _attrs(a)
-        from_text = extract_all(description)
+        from_text = extract_all(description, game)
 
         extra: dict[str, str] = {}
         for name, (raw, cell) in attrs.items():
@@ -253,7 +265,7 @@ def parse_category(html: str, game: str) -> list[Listing]:
             # Показываем только то, что удалось подписать по-человечески.
             if value and (cell or name in meta.labels or name in _LABELS):
                 extra[meta.label(name)] = value
-        if a.get("data-auto"):
+        if a.get("data-auto") == "1":
             extra["Автовыдача"] = "да"
 
         listings.append(
@@ -268,7 +280,7 @@ def parse_category(html: str, game: str) -> list[Listing]:
                 seller=seller,
                 seller_rating=rating,
                 seller_reviews=reviews,
-                seller_online=bool(a.get("data-online")),
+                seller_online=a.get("data-online") == "1",
                 trophies=_numeric_from_attrs(attrs, meta, "trophies") or from_text["trophies"],
                 brawlers=_numeric_from_attrs(attrs, meta, "brawlers") or from_text["brawlers"],
                 level=_numeric_from_attrs(attrs, meta, "level") or from_text["level"],
@@ -330,7 +342,6 @@ class FunPaySource:
             proxy=proxy,
         )
         self._discovered: dict[str, int] = {}
-        self._warned_currency = False
 
     async def close(self) -> None:
         await self.http.close()
@@ -357,15 +368,12 @@ class FunPaySource:
         return r.text
 
     async def fetch(self, game: str) -> list[Listing]:
-        html = await self.fetch_html(game)
+        category = await self.category_id(game)
+        html = (await self.http.get(category_url(category))).text
         try:
-            listings = parse_category(html, game)
+            listings = parse_category(html, game, category)
         except FetchError:
             # Возможно, id категории сменился — в следующий раз найдём его заново.
             self._discovered.pop(game, None)
             raise
-        other = {x.currency for x in listings if x.currency != "RUB"}
-        if other and not self._warned_currency:
-            self._warned_currency = True
-            log.warning("FunPay показывает цены в %s, а не в рублях — учтите это в price_min/price_max", ", ".join(other))
         return listings

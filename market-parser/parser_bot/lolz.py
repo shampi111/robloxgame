@@ -43,6 +43,23 @@ RULE_TO_API = {
 }
 
 
+# Параметры поиска, которые API ждёт массивом (key[]=a&key[]=b), даже если в config.yaml указали одно значение.
+ARRAY_PARAMS = {
+    "supercell_game", "origin", "not_origin", "email_type", "email_provider", "not_email_provider",
+    "brawler", "skin", "tag_id", "not_tag_id", "public_tag_id", "not_public_tag_id",
+}
+# Параметры «да / нет / неважно». В YAML слова yes/no без кавычек превращаются в true/false — возвращаем как было.
+YES_NO_PARAMS = {"tel", "brawl_pass", "royale_pass", "clash_pass"}
+
+
+def _api_value(key: str, value: Any) -> Any:
+    if isinstance(value, bool):
+        if key in YES_NO_PARAMS:
+            return "yes" if value else "no"
+        return 1 if value else 0
+    return value
+
+
 def build_params(rule: Rule, page: int = 1) -> dict[str, Any]:
     params: dict[str, Any] = {
         "order_by": "pdate_to_down",  # сначала новые
@@ -60,9 +77,17 @@ def build_params(rule: Rule, page: int = 1) -> dict[str, Any]:
             params[api_field] = value
     # Свои параметры из config.yaml (lolz_params) перекрывают всё остальное.
     for key, value in rule.lolz_params.items():
-        if isinstance(value, (list, tuple)) and not key.endswith("[]"):
-            key += "[]"
-        params[key] = list(value) if isinstance(value, tuple) else value
+        base = str(key)[:-2] if str(key).endswith("[]") else str(key)
+        params.pop(base, None)
+        params.pop(base + "[]", None)
+        if base in ARRAY_PARAMS or isinstance(value, (list, tuple)):
+            params[base + "[]"] = [_api_value(base, v) for v in (value if isinstance(value, (list, tuple)) else [value])]
+        elif isinstance(value, dict):
+            # Параметры вида brawler_power[SHELLY]=11
+            for sub, sub_value in value.items():
+                params[f"{base}[{sub}]"] = _api_value(base, sub_value)
+        else:
+            params[base] = _api_value(base, value)
     return params
 
 
@@ -89,7 +114,8 @@ def parse_item(item: dict[str, Any], game: str, item_url: str) -> Listing | None
     item_id = item.get("item_id")
     if item_id is None:
         return None
-    seller = item.get("seller") or {}
+    seller = item.get("seller")
+    seller = seller if isinstance(seller, dict) else {}
     title = str(item.get("title") or item.get("title_en") or "").strip()
     description = str(item.get("descriptionPlain") or item.get("description") or "").strip()
 
@@ -158,10 +184,15 @@ def parse_response(data: Any, game: str, item_url: str) -> list[Listing]:
         raise FetchError("LolzMarket: в ответе нет списка items")
     listings = []
     for item in items:
-        if isinstance(item, dict):
+        if not isinstance(item, dict):
+            continue
+        try:
             listing = parse_item(item, game, item_url)
-            if listing:
-                listings.append(listing)
+        except Exception:  # одно странное объявление не должно ломать весь запрос
+            log.exception("LolzMarket: не удалось разобрать товар %s", item.get("item_id"))
+            continue
+        if listing:
+            listings.append(listing)
     return listings
 
 
@@ -191,11 +222,14 @@ def token_problems(token: str) -> list[str]:
 class LolzSource:
     def __init__(self, config: LolzConfig, *, proxy: str | None = None):
         self.config = config
+        self.base_url = config.base_url
         self.http = RateLimitedClient(
             "LolzMarket",
             min_delay=config.request_delay_seconds,
             headers={"Authorization": f"Bearer {config.token}", "Accept": "application/json"},
             proxy=proxy,
+            auth_hint="токен неверный или истёк, у токена нет права market, "
+                      "или у аккаунта нет доступа к Market API (нужно 200 симпатий или подписка)",
         )
 
     async def close(self) -> None:
@@ -207,16 +241,29 @@ class LolzSource:
         raw = json.dumps(build_params(rule), sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha1(raw.encode()).hexdigest()[:8]
 
+    async def _get(self, path: str, params: dict[str, Any]):
+        try:
+            return await self.http.get(f"{self.base_url}{path}", params=params)
+        except FetchError as e:
+            fallback = self.config.fallback_base_url
+            if not e.unreachable or not fallback or fallback == self.base_url:
+                raise
+            log.warning("LolzMarket: %s не отвечает, пробую запасной адрес %s", self.base_url, fallback)
+            r = await self.http.get(f"{fallback}{path}", params=params)
+            self.base_url = fallback  # запасной работает — пользуемся им до перезапуска
+            return r
+
     async def fetch(self, rule: Rule) -> list[Listing]:
         listings: list[Listing] = []
         for page in range(1, self.config.pages + 1):
-            r = await self.http.get(f"{self.config.base_url}/supercell", params=build_params(rule, page))
+            r = await self._get("/supercell", build_params(rule, page))
             try:
                 data = r.json()
             except ValueError:
                 raise FetchError("LolzMarket: ответ не JSON (возможно, сайт недоступен или изменился адрес API)") from None
             listings.extend(parse_response(data, rule.game, self.config.item_url))
-            remaining = ((data.get("system_info") or {}).get("rate_limit") or {}).get("remaining")
+            rate = (data.get("system_info") or {}).get("rate_limit") or {}
+            remaining = _int(rate.get("remaining")) if isinstance(rate, dict) else None
             if remaining is not None and remaining <= 2:
                 log.warning("LolzMarket: почти исчерпан лимит запросов (осталось %s)", remaining)
             if not data.get("hasNextPage"):
