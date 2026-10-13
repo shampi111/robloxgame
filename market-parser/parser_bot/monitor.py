@@ -24,7 +24,8 @@ from .funpay import FunPaySource
 from .http import FetchError
 from .lolz import LolzSource
 from .models import GAMES, SITES, Listing
-from .notify import format_listing, format_overflow
+from .notify import fmt_price, format_listing, format_overflow
+from .rates import Rates
 from .storage import State
 from .telegram import Telegram, esc
 
@@ -60,6 +61,7 @@ class Monitor:
         proxy = config.monitor.proxy
         self.funpay = FunPaySource(config.funpay, proxy=proxy) if config.funpay.enabled else None
         self.lolz = LolzSource(config.lolz, proxy=proxy) if config.lolz.enabled else None
+        self.rates = Rates(config.monitor.currency_rates, proxy=proxy)
         # --interval действует только на этот запуск и не сохраняется.
         self.cli_interval = interval_override
         settings = self.state.settings
@@ -246,8 +248,9 @@ class Monitor:
         alerts: list[Alert] = []
         foreign_currency: set[str] = set()
         for key, listing in merged.items():
+            await self._to_rubles(listing)
             if listing.site == "funpay" and listing.currency != "RUB":
-                foreign_currency.add(listing.currency)
+                foreign_currency.add(listing.currency)  # курс узнать не удалось
             before = self.state.get(key)
             before = dict(before) if before else None
             self.state.touch(key, listing.price, listing.currency)
@@ -270,13 +273,23 @@ class Monitor:
 
         if foreign_currency and "funpay" not in self._currency_warned:
             failed = await self.tg.send(
-                f"⚠️ FunPay показывает цены в {esc(', '.join(sorted(foreign_currency)))}, а не в рублях. "
-                f"Условия price_min/price_max для FunPay сейчас не срабатывают. Обычно так бывает, "
-                f"если бот запущен с зарубежного IP. См. README, раздел «Если что-то не работает»."
+                f"⚠️ FunPay показывает цены в {esc(', '.join(sorted(foreign_currency)))}, а курс к рублю "
+                f"узнать не удалось. Пока он недоступен, условия price_min/price_max для FunPay не срабатывают. "
+                f"Можно задать курс вручную: monitor.currency_rates (см. README)."
             )
             if len(failed) < len(self.tg.chat_ids):
                 self._currency_warned.add("funpay")
         return await self._deliver(alerts, self._quota if quota is None else quota, defer)
+
+    async def _to_rubles(self, listing: Listing) -> None:
+        """Цена в другой валюте (FunPay из-за границы показывает $ или €) → рубли по текущему курсу."""
+        if listing.price is None or listing.currency == "RUB":
+            return
+        rub = await self.rates.to_rub(listing.price, listing.currency)
+        if rub is None:
+            return
+        listing.extra["Цена на сайте"] = fmt_price(listing.price, listing.currency)
+        listing.price, listing.currency = rub, "RUB"
 
     async def _deliver(self, alerts: list[Alert], quota: int, defer: list | None = None) -> int:
         alerts = _interleave_sites(alerts)

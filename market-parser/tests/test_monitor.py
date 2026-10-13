@@ -87,7 +87,17 @@ def make(tmp_path, rules, chat_ids=("1",), persist=True, **monitor_kw):
     tg = FakeTelegram(chat_ids)
     m = Monitor(cfg, tg, persist=persist)
     m.funpay, m.lolz = FakeFunPay(), FakeLolz()
+    m.rates = FakeRates()
     return m, tg
+
+
+class FakeRates:
+    def __init__(self, rates=None):
+        self.rates = rates or {}
+
+    async def to_rub(self, amount, currency):
+        rate = self.rates.get(currency)
+        return round(amount * rate, 2) if rate else None
 
 
 def run(coro):
@@ -350,11 +360,20 @@ def test_keywords_and_seller_filters(tmp_path):
     assert "id=1" in tg.sent[-1][1]
 
 
-def test_funpay_foreign_currency(tmp_path):
+def test_funpay_foreign_currency_without_rate(tmp_path):
     m, tg = make(tmp_path, [BS], notify_on_first_run=True)
     m.funpay.data["brawl_stars"] = [fp("1", 10, currency="USD")]
-    assert run(m.run_cycle()) == 0  # $10 нельзя сравнить с рублёвым price_max
-    assert any("не в рублях" in t for t in tg.texts())
+    assert run(m.run_cycle()) == 0  # курса нет — $10 нельзя сравнить с рублёвым price_max
+    assert any("курс к рублю" in t for t in tg.texts())
+
+
+def test_funpay_foreign_currency_is_converted(tmp_path):
+    m, tg = make(tmp_path, [BS], notify_on_first_run=True)  # price_max 1000 ₽
+    m.rates = FakeRates({"USD": 90.0})
+    m.funpay.data["brawl_stars"] = [fp("1", 10, currency="USD"), fp("2", 20, currency="USD")]
+    assert run(m.run_cycle()) == 1  # $10 = 900 ₽ подходит, $20 = 1800 ₽ — нет
+    text = tg.sent[-1][1]
+    assert "id=1" in text and "≈ <b>900 ₽</b> (10 $ по текущему курсу)" in text
 
 
 def test_currency_switch_does_not_fake_price_drop(tmp_path):

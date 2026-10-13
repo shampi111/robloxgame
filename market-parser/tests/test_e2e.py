@@ -238,3 +238,30 @@ def test_lolz_switches_back_to_main_address(tmp_path, monkeypatch):
 
     status = asyncio.run(scenario())
     assert "✅ Lolz" in status and main.call_count >= 5 and backup.call_count >= 2
+
+
+@respx.mock
+def test_rates_sources_and_fallback():
+    from parser_bot.rates import Rates
+
+    respx.get("https://open.er-api.com/v6/latest/RUB").mock(side_effect=httpx.ConnectError("blocked"))
+    respx.get("https://www.cbr-xml-daily.ru/daily_json.js").mock(return_value=httpx.Response(200, json={
+        "Valute": {"USD": {"Nominal": 1, "Value": 90.0}, "GEL": {"Nominal": 1, "Value": 33.0},
+                   "KZT": {"Nominal": 100, "Value": 18.0}},
+    }))
+
+    async def scenario():
+        rates = Rates({"EUR": 100})
+        return (await rates.to_rub(10, "USD"), await rates.to_rub(1000, "KZT"),
+                await rates.to_rub(2, "eur"), await rates.to_rub(5, "XYZ"))
+
+    assert asyncio.run(scenario()) == (900.0, 180.0, 200.0, None)
+
+
+def test_er_api_format():
+    from parser_bot.rates import parse_rates
+
+    rates = parse_rates("https://open.er-api.com/v6/latest/RUB",
+                        {"result": "success", "rates": {"RUB": 1, "USD": 0.0125, "EUR": 0.01}})
+    assert rates["USD"] == 80.0 and rates["EUR"] == 100.0 and rates["RUB"] == 1.0
+    assert parse_rates("https://open.er-api.com/v6/latest/RUB", {"result": "error"}) == {}

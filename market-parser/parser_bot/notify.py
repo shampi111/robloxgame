@@ -35,6 +35,9 @@ def format_listing(listing: Listing, rule_names: list[str], kind: str = "new", o
         price = f"<s>{esc(fmt_price(old_price, listing.currency))}</s> → <b>{esc(price)}</b>"
     else:
         price = f"<b>{esc(price)}</b>"
+    original = listing.extra.get("Цена на сайте")
+    if original:
+        price = f"≈ {price} ({esc(original)} по текущему курсу)"
     lines.append(f"💰 {price}")
 
     stats = []
@@ -47,7 +50,8 @@ def format_listing(listing: Listing, rule_names: list[str], kind: str = "new", o
     if stats:
         lines.append(" · ".join(stats))
     for key, value in listing.extra.items():
-        lines.append(f"• {esc(key)}: {esc(value)}")
+        if key != "Цена на сайте":
+            lines.append(f"• {esc(key)}: {esc(value)}")
 
     if listing.seller:
         seller = f"👤 {esc(listing.seller)}"

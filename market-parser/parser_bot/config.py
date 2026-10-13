@@ -43,6 +43,8 @@ class MonitorConfig:
     max_notifications_per_cycle: int = 25
     state_file: str = "state.json"
     proxy: str | None = None
+    # Ручные курсы «сколько рублей за 1 единицу» (USD: 95). Нужны, только если автоматические недоступны.
+    currency_rates: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -244,6 +246,12 @@ def load_config(path: str | Path) -> Config:
     )
     monitor.min_price_drop_percent = _number(monitor.min_price_drop_percent, "monitor.min_price_drop_percent", maximum=99)
     monitor.proxy = _proxy(monitor.proxy, "monitor.proxy")
+    if not isinstance(monitor.currency_rates or {}, dict):
+        raise ConfigError("monitor.currency_rates должен быть словарём (USD: 95, EUR: 103)")
+    monitor.currency_rates = {
+        str(code).upper(): _number(rate, f"monitor.currency_rates.{code}", minimum=0.0001)
+        for code, rate in (monitor.currency_rates or {}).items()
+    }
 
     funpay = _build(FunPayConfig, _section(raw, "funpay"), "funpay")
     _number(funpay.request_delay_seconds, "funpay.request_delay_seconds")

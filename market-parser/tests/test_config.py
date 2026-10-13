@@ -90,6 +90,8 @@ rules: [{name: a, game: brawl_stars, sites: [funpay]}]
         ("monitor: {min_price_drop_percent: 150}", "min_price_drop_percent"),
         ("monitor: {proxy: 'host:1080'}", "прокси"),
         ("lolz: {token: t, pages: abc}", "lolz.pages"),
+        ("monitor: {currency_rates: {USD: -1}}", "currency_rates"),
+        ("monitor: {currency_rates: [95]}", "currency_rates"),
     ],
 )
 def test_bad_settings(tmp_path, section, message):
